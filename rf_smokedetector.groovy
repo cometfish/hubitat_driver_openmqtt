@@ -23,13 +23,6 @@ preferences {
     }
 }
 
-import static hubitat.helper.InterfaceUtils.alphaV1mqttConnect
-import static hubitat.helper.InterfaceUtils.alphaV1mqttDisconnect
-import static hubitat.helper.InterfaceUtils.alphaV1mqttSubscribe
-import static hubitat.helper.InterfaceUtils.alphaV1mqttUnsubscribe
-import static hubitat.helper.InterfaceUtils.alphaV1parseMqttMessage
-import static hubitat.helper.InterfaceUtils.alphaV1mqttPublish
-
 def installed() {
     log.warn "installed..."
 	sendEvent(name: "smoke", value: "clear", isStateChange: true)
@@ -41,15 +34,13 @@ def parse(String description) {
 		return
 	} 
 	
-    mqtt = alphaV1parseMqttMessage(description)
+    mqtt = interfaces.mqtt.parseMessage(description)
 	json = new groovy.json.JsonSlurper().parseText(mqtt.payload)
 	if (logEnable) log.debug json.value
 	if (json.value == settings.triggerValue && json.protocol == settings.triggerProtocol && json.length == settings.triggerLength) {
-		if (logEnable) log.debug "open" 
-		
+		if (logEnable) log.debug "open"
 		sendEvent(name: "smoke", value: "detected", isStateChange: true)
 		runIn(settings.closeAfterSeconds, smokeCleared)
-		
 	} 
 }
 
@@ -63,29 +54,42 @@ def updated() {
 }
 def disconnect() {
 	log.info "disconnecting from mqtt"
-    alphaV1mqttDisconnect(device)
+    interfaces.mqtt.disconnect()
+    state.connected = false
 }
 
 def uninstalled() {
-    log.info "disconnecting from mqtt"
-    alphaV1mqttDisconnect(device)
+    disconnect()
 }
 
 def initialize() {
     try {
         //open connection
-        alphaV1mqttConnect(device, "tcp://" + settings.mqttBroker, settings.mqttClientID, null, null)
+        def mqttInt = interfaces.mqtt
+        mqttInt.connect("tcp://" + settings.mqttBroker, settings.mqttClientID, null, null)
         //give it a chance to start
         pauseExecution(1000)
-        log.info "connection established"
-        alphaV1mqttSubscribe(device, settings.mqttTopic)
+        if (logEnable) log.info "connection established"
+        mqttInt.subscribe(settings.mqttTopic)
     } catch(e) {
         log.error "initialize error: ${e.message}"
     }
 }
 
 def mqttClientStatus(String status){
-    log.error "mqttStatus- error: ${status}"
-    //try to reconnect
-    initialize()
+    if (logEnable) log.debug "mqttStatus: ${status}"
+    switch (status) {
+        case "Status: Connection succeeded":
+            state.connected = true
+            break
+        case "disconnected":
+            //note: this is NOT called when we deliberately disconnect, only on unexpected disconnect
+            state.connected = false
+            //try to reconnect after a small wait (so the broker being down doesn't send us into an endless loop of trying to reconnect and lock up the hub)
+            runIn(5, initialize)
+            break
+        default:
+            log.info status
+            break
+    }
 }

@@ -2,6 +2,8 @@ metadata {
     definition (name: "Motion sensor (OpenMQTT - HCSR501)", namespace: "community", author: "cometfish") {
         capability "Sensor"
         capability "MotionSensor"
+        
+        command "disconnect"
 		
 		attribute "motion", "enum", ["active", "inactive"]
     }
@@ -16,11 +18,6 @@ preferences {
     }
 }
 
-import static hubitat.helper.InterfaceUtils.alphaV1mqttConnect
-import static hubitat.helper.InterfaceUtils.alphaV1mqttDisconnect
-import static hubitat.helper.InterfaceUtils.alphaV1mqttSubscribe
-import static hubitat.helper.InterfaceUtils.alphaV1parseMqttMessage
-
 def installed() {
     log.warn "installed..."
 }
@@ -28,7 +25,7 @@ def installed() {
 def parse(String description) {
     if (logEnable) log.debug description
 	
-    mqtt = alphaV1parseMqttMessage(description)
+    mqtt = interfaces.mqtt.parseMessage(description)
 	if (logEnable) log.debug mqtt
 	if (logEnable) log.debug mqtt.topic
     
@@ -44,26 +41,44 @@ def updated() {
     initialize()
 }
 
+def disconnect() {
+	if (logEnable) log.info "disconnecting from mqtt"
+    interfaces.mqtt.disconnect()
+    state.connected = false
+}
+
 def uninstalled() {
-    log.info "disconnecting from mqtt"
-    alphaV1mqttDisconnect(device)
+    disconnect()
 }
 
 def initialize() {
     try {
         //open connection
-        alphaV1mqttConnect(device, "tcp://" + settings.mqttBroker, settings.mqttClientID, null, null)
+        def mqttInt = interfaces.mqtt
+        mqttInt.connect("tcp://" + settings.mqttBroker, settings.mqttClientID, null, null)
         //give it a chance to start
         pauseExecution(1000)
         if (logEnable) log.info "connection established"
-        alphaV1mqttSubscribe(device, settings.mqttTopic)
+        mqttInt.subscribe(settings.mqttTopic)
     } catch(e) {
         log.debug "initialize error: ${e.message}"
     }
 }
 
 def mqttClientStatus(String status){
-    log.debug "mqttStatus- error: ${status}"
-    //try to reconnect
-    initialize()
+    if (logEnable) log.debug "mqttStatus: ${status}"
+    switch (status) {
+        case "Status: Connection succeeded":
+            state.connected = true
+            break
+        case "disconnected":
+            //note: this is NOT called when we deliberately disconnect, only on unexpected disconnect
+            state.connected = false
+            //try to reconnect after a small wait (so the broker being down doesn't send us into an endless loop of trying to reconnect and lock up the hub)
+            runIn(5, initialize)
+            break
+        default:
+            log.info status
+            break
+    }
 }

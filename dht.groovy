@@ -40,20 +40,13 @@ preferences {
     }
 }
 
-import static hubitat.helper.InterfaceUtils.alphaV1mqttConnect
-import static hubitat.helper.InterfaceUtils.alphaV1mqttDisconnect
-import static hubitat.helper.InterfaceUtils.alphaV1mqttSubscribe
-import static hubitat.helper.InterfaceUtils.alphaV1mqttUnsubscribe
-import static hubitat.helper.InterfaceUtils.alphaV1parseMqttMessage
-import static hubitat.helper.InterfaceUtils.alphaV1mqttPublish
-
 def installed() {
     log.warn "installed..."
 }
 
 // Parse incoming device messages to generate events
 def parse(String description) {
-    mqtt = alphaV1parseMqttMessage(description)
+    mqtt = interfaces.mqtt.parseMessage(description)
 	json = new groovy.json.JsonSlurper().parseText(mqtt.payload)
 	sendEvent(name: "humidity", value: json.hum, isStateChange: true)
 	sendEvent(name: "temperature", value: json.temp, isStateChange: true)
@@ -65,31 +58,44 @@ def updated() {
 }
 def disconnect() {
 	if (logEnable) log.info "disconnecting from mqtt"
-    alphaV1mqttDisconnect(device)
+    interfaces.mqtt.disconnect()
+    state.connected = false
 }
 
 def uninstalled() {
-    if (logEnable) log.info "disconnecting from mqtt"
-    alphaV1mqttDisconnect(device)
+    disconnect()
 }
 
 def initialize() {
     try {
         //open connection
-        alphaV1mqttConnect(device, "tcp://" + settings.mqttBroker, settings.mqttClientID, null, null)
+        def mqttInt = interfaces.mqtt
+        mqttInt.connect("tcp://" + settings.mqttBroker, settings.mqttClientID, null, null)
         //give it a chance to start
         pauseExecution(1000)
-        log.info "connection established"
-        alphaV1mqttSubscribe(device, settings.mqttTopic)
+        if (logEnable) log.info "connection established"
+        mqttInt.subscribe(settings.mqttTopic)
     } catch(e) {
         log.error "initialize error: ${e.message}"
     }
 }
 
 def mqttClientStatus(String status){
-    log.error "mqttStatus- error: ${status}"
-    //try to reconnect
-    initialize()
+    if (logEnable) log.debug "mqttStatus: ${status}"
+    switch (status) {
+        case "Status: Connection succeeded":
+            state.connected = true
+            break
+        case "disconnected":
+            //note: this is NOT called when we deliberately disconnect, only on unexpected disconnect
+            state.connected = false
+            //try to reconnect after a small wait (so the broker being down doesn't send us into an endless loop of trying to reconnect and lock up the hub)
+            runIn(5, initialize)
+            break
+        default:
+            log.info status
+            break
+    }
 }
 
 //empty funcs for thermostat capability 
